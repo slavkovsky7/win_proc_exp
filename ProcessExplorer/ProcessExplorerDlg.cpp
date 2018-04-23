@@ -23,7 +23,7 @@ CProcessExplorerDlg::CProcessExplorerDlg(CWnd* pParent /*=NULL*/)
 	: CDialogEx(IDD_PROCESSEXPLORER_DIALOG, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
-	std::vector<std::string> specialProcSubstr = StringUtils::ReadFile("intput.txt");
+	std::vector<std::string> specialProcSubstr = StringUtils::ReadFile("input.txt");
 	processReader = std::shared_ptr<ProcessReader>(new ProcessReader(specialProcSubstr));
 	threadRunning = false;
 }
