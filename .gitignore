@@ -1,0 +1,7 @@
+*.vs
+*.sdf
+Debug
+ipch
+Release
+*.VC.opendb
+*.htm
