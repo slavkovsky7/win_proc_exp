@@ -29,13 +29,44 @@ bool ProcessInfo::IsSpecial() {
 	return special;
 }
 
+void ProcessInfo::SetSpecial(bool val) {
+	this->special = val;
+}
+
 bool ProcessInfo::operator < (const ProcessInfo& other) {
 	return (StringUtils::Tolower(processName).compare(StringUtils::Tolower(other.processName)) < 0);
 }
 
-ProcessReader::ProcessReader(const std::vector<std::string>& specialProcSubstrs) :
-	specialProcSubstrs(specialProcSubstrs)
-{}
+void ProcessReader::OnProcessCreate(const std::string& procName, int pid) {
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (processMap.count(pid) == 0) {
+			std::string desc = GetProcessDescription(pid);
+			bool special = CheckSpecialProcSubstrs(procName, desc);
+			ProcessInfo processInfo(pid, procName, desc, special);
+			processMap.insert(std::make_pair(pid, processInfo));
+		}
+	}
+	processListUpdatedCallback();
+}
+
+void ProcessReader::OnProcessTerminate(const std::string& str, int pid) {
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		processMap.erase(pid);
+	}
+	processListUpdatedCallback();
+}
+
+
+ProcessReader::ProcessReader(const std::vector<std::string>& specialProcSubstrs, TProcessListUpdatedCallback processListUpdatedCallback) :
+	specialProcSubstrs(specialProcSubstrs),
+	processListUpdatedCallback(processListUpdatedCallback)
+{
+	TProcessNotification onProcessCreate = std::bind(&ProcessReader::OnProcessCreate, this, std::placeholders::_1, std::placeholders::_2);
+	TProcessNotification onProcessTerminate = std::bind(&ProcessReader::OnProcessTerminate, this, std::placeholders::_1, std::placeholders::_2);
+	RegisterCallBack(onProcessCreate, onProcessTerminate);
+}
 
 std::vector<std::string> ProcessReader::GetSpecialProcSubstrs() {
 	std::lock_guard<std::mutex> lock(mutex);
@@ -45,10 +76,13 @@ std::vector<std::string> ProcessReader::GetSpecialProcSubstrs() {
 void ProcessReader::SetSpecialProcSubstrs(const std::vector<std::string>& specialProcSubstrs) {
 	std::lock_guard<std::mutex> lock(mutex);
 	this->specialProcSubstrs = specialProcSubstrs;
+	for (auto& kv : this->processMap) {
+		ProcessInfo* procInfo = &kv.second;
+		procInfo->SetSpecial(CheckSpecialProcSubstrs(procInfo->GetProcessName(), procInfo->GetProcessDescription()));
+	}
 }
 
 bool ProcessReader::EnableDebugPrivileges() {
-	HANDLE hProcess;
 	HANDLE hToken;
 
 	if (!OpenThreadToken(GetCurrentThread(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, FALSE, &hToken)) {
@@ -64,6 +98,17 @@ bool ProcessReader::EnableDebugPrivileges() {
 			if (!SetPrivilege(hToken, SE_DEBUG_NAME, TRUE)) {
 				return false;
 			}
+
+			HANDLE procToken;
+			if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &procToken)) {
+				return false;
+			}
+
+			if (!SetPrivilege(procToken, SE_DEBUG_NAME, TRUE)) {
+				return false;
+			}
+			CloseHandle(procToken);
+
 		}
 		else {
 			return false;
@@ -76,18 +121,18 @@ bool ProcessReader::EnableDebugPrivileges() {
 
 std::vector<ProcessInfo> ProcessReader::GetProcessList() {
 	std::lock_guard<std::mutex> lock(mutex);
-	std::vector<ProcessInfo> result = processList;
+	std::vector<ProcessInfo> result;
+	for (auto& kv : this->processMap) {
+		result.push_back(kv.second);
+	}
+	std::sort(result.begin(), result.end());
 	return result;
 }
 
-void ProcessReader::Update() {
+void ProcessReader::CreateProcessMap() {
 	std::lock_guard<std::mutex> lock(mutex);
-	this->processList.clear();
-
 	HANDLE hProcessSnap;
-	HANDLE hProcess;
 	PROCESSENTRY32 pe32;
-	DWORD dwPriorityClass;
 
 	hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (hProcessSnap != INVALID_HANDLE_VALUE) {
@@ -96,18 +141,17 @@ void ProcessReader::Update() {
 			do {
 				std::string processName = std::string(pe32.szExeFile);
 				std::string description = GetProcessDescription(pe32.th32ProcessID);
-				bool special = checkSpecialProcSubstrs(processName, description);
-				this->processList.push_back(ProcessInfo(pe32.th32ProcessID, processName, description, special));
+				bool special = CheckSpecialProcSubstrs(processName, description);
+				this->processMap.insert(std::make_pair(pe32.th32ProcessID, ProcessInfo(pe32.th32ProcessID, processName, description, special)));
 
 			} while (Process32Next(hProcessSnap, &pe32));
 		}
 		CloseHandle(hProcessSnap);
 	}
-	std::sort(processList.begin(), processList.end());
 }
 
 
-bool ProcessReader::checkSpecialProcSubstrs(const std::string& processName, const std::string& description) {
+bool ProcessReader::CheckSpecialProcSubstrs(const std::string& processName, const std::string& description) {
 	for (auto specialProcSubstr : specialProcSubstrs) {
 		if (StringUtils::Tolower(processName).find(StringUtils::Tolower(specialProcSubstr)) != std::string::npos ||
 			StringUtils::Tolower(description).find(StringUtils::Tolower(specialProcSubstr)) != std::string::npos) {
@@ -176,7 +220,6 @@ std::string ProcessReader::GetProcessDescription(DWORD th32ProcessID) {
 
 			LPVOID	lpInfo;
 			UINT	unInfoLen;
-			VS_FIXEDFILEINFO fileInfo;
 			if (VerQueryValue(lpData, _T("\\VarFileInfo\\Translation"), &lpInfo, &unInfoLen)) {
 
 				DWORD	dwLangCode = 0;
@@ -202,4 +245,74 @@ std::string ProcessReader::GetProcessDescription(DWORD th32ProcessID) {
 		CloseHandle(hProcess);
 	}
 	return result;
+}
+
+
+HRESULT ProcessReader::RegisterCallBack(TProcessNotification createProcessCallback, TProcessNotification terminateProcessCallback) {
+	HRESULT hres;
+	hres = CoInitializeEx(0, COINIT_MULTITHREADED);
+	if (FAILED(hres)) {
+		return hres;
+	}
+
+	hres = CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+	if (FAILED(hres)) {
+		CoUninitialize();
+		return hres;
+	}
+
+	CComPtr<IWbemLocator> pLoc;
+	hres = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID *)&pLoc);
+	if (FAILED(hres)) {
+		CoUninitialize();
+		return hres;
+	}
+
+	CComPtr<IWbemServices> pSvc;
+	hres = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"),NULL, NULL,  0, NULL, 0, 0, &pSvc);
+	if (FAILED(hres)) {
+		CoUninitialize();
+		return hres;
+	}
+
+	hres = CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,  RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+	if (FAILED(hres)) {
+		CoUninitialize();
+		return hres;
+	}
+
+	CComPtr<EventSink> eventSyncCreate(new EventSink(createProcessCallback));
+	hres = RegisterEventSyncQuery(pSvc, "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'", eventSyncCreate);
+
+	CComPtr<EventSink> eventSyncTerminate(new EventSink(terminateProcessCallback));
+	hres = RegisterEventSyncQuery(pSvc, "SELECT * FROM __InstanceDeletionEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'", eventSyncTerminate);
+	
+	if (FAILED(hres)) {
+		CoUninitialize();
+		return hres;
+	}
+	return hres;
+}
+
+
+HRESULT ProcessReader::RegisterEventSyncQuery(CComPtr<IWbemServices> pSvc, const std::string& query, CComPtr<EventSink> eventSync) {
+
+	CComPtr<IUnsecuredApartment> pUnsecApp;
+	HRESULT hres = CoCreateInstance(CLSID_UnsecuredApartment, NULL, CLSCTX_LOCAL_SERVER, IID_IUnsecuredApartment, (void**)&pUnsecApp);
+
+
+	CComPtr<IUnknown> pStubUnk = NULL;
+	pUnsecApp->CreateObjectStub(eventSync, &pStubUnk);
+
+	CComPtr<IWbemObjectSink> pStubSink = NULL;
+	pStubUnk->QueryInterface(IID_IWbemObjectSink, (void **)&pStubSink);
+
+	hres = pSvc->ExecNotificationQueryAsync(
+		_bstr_t("WQL"),
+		_bstr_t(query.c_str()),
+		WBEM_FLAG_SEND_STATUS,
+		NULL,
+		pStubSink);
+
+	return hres;
 }

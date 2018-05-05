@@ -2,6 +2,8 @@
 #include <mutex>
 #include <vector>
 #include <string>
+#include <map>
+#include "EventSink.h"
 
 class ProcessInfo {
 private:
@@ -15,25 +17,37 @@ public:
 	std::string GetProcessDescription();
 	int GetProcesId();
 	bool IsSpecial();
+	void SetSpecial(bool val);
 	bool operator < (const ProcessInfo& other);
 };
 
+
+typedef std::function< void(void) > TProcessListUpdatedCallback;
+
+
 class ProcessReader {
 private:
-	std::vector<ProcessInfo> processList;
+	std::map<int, ProcessInfo> processMap;
 	std::vector<std::string> specialProcSubstrs;
 	std::mutex mutex;
+	TProcessListUpdatedCallback processListUpdatedCallback;
 public:
-	ProcessReader(const std::vector<std::string>& specialProcSubstrs);
+	ProcessReader(const std::vector<std::string>& specialProcSubstrs, TProcessListUpdatedCallback processListUpdatedCallback);
 	std::vector<std::string> GetSpecialProcSubstrs();
 	std::vector<ProcessInfo> GetProcessList();
+	void CreateProcessMap();
 	void SetSpecialProcSubstrs(const std::vector<std::string>& specialProcSubstrs);
 	bool EnableDebugPrivileges();
-	void Update();
-
 private:
-	bool checkSpecialProcSubstrs(const std::string& processName, const std::string& description);
+	bool CheckSpecialProcSubstrs(const std::string& processName, const std::string& description);
+	void OnProcessCreate(const std::string& str, int pid);
+	void OnProcessTerminate(const std::string& str, int pid);
+public:
+	HRESULT RegisterCallBack(TProcessNotification createProcessCallback, TProcessNotification terminateProcessCallback);
+	HRESULT RegisterEventSyncQuery(CComPtr<IWbemServices> pSvc, const std::string& query, CComPtr<EventSink> eventSync);
+private:
 	static bool ProcessReader::SetPrivilege(HANDLE hToken, LPCTSTR Privilege, BOOL bEnablePrivilege);
 	static bool GetTranslationId(LPVOID lpData, UINT unBlockSize, WORD wLangId, DWORD &dwId, BOOL bPrimaryEnough);
 	static std::string GetProcessDescription(DWORD th32ProcessID);
+
 };

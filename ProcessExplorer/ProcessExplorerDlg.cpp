@@ -1,6 +1,7 @@
 
 // ProcessExplorerDlg.cpp : implementation file
 //
+//#include <ntifs.h>
 
 #include "stdafx.h"
 #include "ProcessExplorer.h"
@@ -17,6 +18,8 @@
 
 #define WM_MY_THREAD_MESSAGE	WM_APP+100
 
+//#include <ntddk.h>
+
 
 
 CProcessExplorerDlg::CProcessExplorerDlg(CWnd* pParent /*=NULL*/)
@@ -24,8 +27,11 @@ CProcessExplorerDlg::CProcessExplorerDlg(CWnd* pParent /*=NULL*/)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 	std::vector<std::string> specialProcSubstr = StringUtils::ReadFile("input.txt");
-	processReader = std::shared_ptr<ProcessReader>(new ProcessReader(specialProcSubstr));
-	threadRunning = false;
+
+	TProcessListUpdatedCallback processListUpdatedCallback = std::bind(&CProcessExplorerDlg::ProcessListUpdated, this);
+	processReader = std::shared_ptr<ProcessReader>(new ProcessReader(specialProcSubstr, processListUpdatedCallback));
+	processReader->EnableDebugPrivileges();
+	processReader->CreateProcessMap();
 }
 void CProcessExplorerDlg::DoDataExchange(CDataExchange* pDX)
 {
@@ -66,27 +72,12 @@ LRESULT CProcessExplorerDlg::OnThreadMessage(WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
-//TODO premenovat
-UINT ProcessUpdateThread(CProcessExplorerDlg *pThis)
+void CProcessExplorerDlg::ProcessListUpdated()
 {
-	//CProcessExplorerDlg* pThis = (CProcessExplorerDlg*)pParam;
-	bool privEnabled = pThis->processReader->EnableDebugPrivileges();
-	if (!privEnabled) {
-		MessageBox(NULL, "Damn. It will not work because of privileges", "Error", MB_OK);
-	}
-
-	while (pThis->threadRunning)
-	{
-		pThis->processReader->Update();
-		pThis->SendMessage(WM_MY_THREAD_MESSAGE);
-		Sleep(2000);
-	}
-	return 0;
+	SendMessage(WM_MY_THREAD_MESSAGE);
 }
 
 void CProcessExplorerDlg::OnDestroy() {
-	threadRunning = false;
-	thread.join();
 	CDialogEx::OnDestroy();
 }
 
@@ -98,10 +89,9 @@ BOOL CProcessExplorerDlg::OnInitDialog()
 	SetIcon(m_hIcon, TRUE);			// Set big icon
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
-	threadRunning = true;
-	thread = std::thread(ProcessUpdateThread, this);
 	edit2.SetWindowText("Special substrs from  input.txt");
 	edit1.SetWindowText(StringUtils::JoinStrings(processReader->GetSpecialProcSubstrs()).c_str());
+	ProcessListUpdated();
 	return TRUE;
 }
 
@@ -154,4 +144,6 @@ void CProcessExplorerDlg::OnBnClickedButton1()
 	edit1.GetWindowText(str);
 
 	processReader->SetSpecialProcSubstrs(StringUtils::ReadStream(std::string(str)));
+	ProcessListUpdated();
+
 }

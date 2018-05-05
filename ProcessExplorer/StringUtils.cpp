@@ -42,3 +42,17 @@ std::string StringUtils::JoinStrings(const std::vector<std::string>& strVec) {
 	}
 	return ss.str();
 }
+
+std::string StringUtils::ConvertBSTRToMBS(BSTR bstr)
+{
+	int wslen = ::SysStringLen(bstr);
+	return ConvertWCSToMBS((wchar_t*)bstr, wslen);
+}
+
+std::string StringUtils::ConvertWCSToMBS(const wchar_t* pstr, long wslen)
+{
+	int len = ::WideCharToMultiByte(CP_ACP, 0, pstr, wslen, NULL, 0, NULL, NULL);
+	std::string dblstr(len, '\0');
+	len = ::WideCharToMultiByte(CP_ACP, 0,	pstr, wslen, &dblstr[0], len, NULL, NULL );
+	return dblstr;
+}

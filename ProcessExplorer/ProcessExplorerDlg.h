@@ -18,16 +18,13 @@ public:
 	CProcessExplorerDlg(CWnd* pParent = NULL);	// standard constructor
 	CColorListBox colorListBox;
 	std::shared_ptr<ProcessReader> processReader;
-	std::atomic<bool> threadRunning;
+	void ProcessListUpdated();
 // Dialog Data
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_PROCESSEXPLORER_DIALOG };
 #endif
 
 protected:
-	//CWinThread *thread;
-	std::thread thread;
-	std::mutex threadRunningMutex;
 	CEdit edit1;
 	CEdit edit2;
 protected:
